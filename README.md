@@ -1,15 +1,10 @@
-# Vicinae Extension
+ Extention for vicinae to index files based on file content 
 
-Congratulations on generating your new Vicinae extension!
 
-You can install the required dependencies and run your extension in development mode like so:
+TODO:
 
-```bash
-npm install
-npm run dev
-```
-If you want to build the production bundle, simply run:
+Explain indexer and crawler
+Auto re-index on file addition
+Detail-list preview 
+Extend functionality to text files (and ppts, docx, etc)
 
-```bash
-npm run build
-```
