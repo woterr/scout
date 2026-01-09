@@ -4,7 +4,6 @@ import {
   ActionPanel,
   Icon,
   List,
-  Detail,
   showToast,
   Toast,
 } from "@vicinae/api";
@@ -21,23 +20,44 @@ const SEARCH_ROOTS: string[] = [
   "/mnt/shared/linux",
 ];
 
-/* ================ COMPONENT ================ */
+/* ================ HELPERS ================= */
+
+function extractSnippet(text: string, query: string, radius = 80): string {
+  const t = text.toLowerCase();
+  const q = query.toLowerCase();
+
+  const idx = t.indexOf(q);
+  if (idx === -1) return "";
+
+  const start = Math.max(0, idx - radius);
+  const end = Math.min(text.length, idx + q.length + radius);
+
+  return text.slice(start, end).replace(/\s+/g, " ").trim();
+}
+
+function highlight(snippet: string, query: string): string {
+  if (!snippet) return "";
+
+  const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const re = new RegExp(escaped, "gi");
+
+  return snippet.replace(re, (m) => `**${m}**`);
+}
+
+/* ================ COMPONENT ================= */
 
 export default function Scout(): JSX.Element {
-  const [query, setQuery] = useState<string>("");
+  const [query, setQuery] = useState("");
   const [indexedFiles, setIndexedFiles] = useState<IndexedFile[]>([]);
   const [results, setResults] = useState<IndexedFile[]>([]);
-  const [loading, setLoading] = useState<boolean>(false);
-  const [indexed, setIndexed] = useState<boolean>(false);
+  const [indexed, setIndexed] = useState(false);
+  const [loading, setLoading] = useState(false);
 
-  const [selectedFile, setSelectedFile] = useState<IndexedFile | null>(null);
-  const [previewText, setPreviewText] = useState<string>("");
-
-  /* ---------- Initial indexing ---------- */
+  /* ---------- Indexing ---------- */
 
   useEffect(() => {
-    async function init(): Promise<void> {
-      let files: IndexedFile[] | null = loadFileIndex();
+    async function init() {
+      let files = loadFileIndex();
 
       if (!files) {
         await showToast({
@@ -62,43 +82,10 @@ export default function Scout(): JSX.Element {
     init();
   }, []);
 
-  
-
   /* ---------- Search ---------- */
 
-	function extractSnippet(
-	text: string,
-	query: string,
-	radius = 80
-	): string {
-	const q = query.toLowerCase();
-	const t = text.toLowerCase();
-
-	const idx = t.indexOf(q);
-	if (idx === -1) return "";
-
-	const start = Math.max(0, idx - radius);
-	const end = Math.min(text.length, idx + q.length + radius);
-
-	return text
-		.slice(start, end)
-		.replace(/\s+/g, " ")
-		.trim();
-	}
-
-
-	function highlightMatch(snippet: string, query: string): string {
-    if (!snippet) return "";
-
-    const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const re = new RegExp(escaped, "gi");
-
-    return snippet.replace(re, (m) => `**${m}**`);
-	}
-
-
   useEffect(() => {
-    async function runSearch(): Promise<void> {
+    async function run() {
       if (!indexed || query.trim().length < 2) {
         setResults([]);
         return;
@@ -107,13 +94,13 @@ export default function Scout(): JSX.Element {
       setLoading(true);
 
       try {
-        const matches: IndexedFile[] = await searchFiles(indexedFiles, query);
+        const matches = await searchFiles(indexedFiles, query);
         setResults(matches);
-      } catch (err) {
-        console.error("[Scout] search error", err);
+      } catch (e) {
+        console.error("[Scout]", e);
         showToast({
           style: Toast.Style.Failure,
-          title: "Scout error",
+          title: "Scout",
           message: "Search failed",
         });
       } finally {
@@ -121,87 +108,14 @@ export default function Scout(): JSX.Element {
       }
     }
 
-    runSearch();
+    run();
   }, [query, indexed, indexedFiles]);
 
-  /* ---------- Preview ---------- */
-
-  function openPreview(file: IndexedFile): void {
-    const cache = loadContentCache();
-    const entry = cache[file.path];
-
-    setSelectedFile(file);
-    setPreviewText(
-      entry?.text?.slice(0, 3000) ??
-        "_No extractable text found on first page._"
-    );
-  }
-
-  /* ---------- Detail View ---------- */
-	if (selectedFile) {
-	const filename =
-		selectedFile.path.split("/").pop() ?? selectedFile.path;
-	
-    const contentCache = loadContentCache();
-	const rawText = contentCache[selectedFile.path]?.text ?? "";
-	const snippet = extractSnippet(rawText, query);
-	const highlighted = highlightMatch(snippet, query);
-
-	const markdown =
-	`# ${filename}\n\n\n\n\n\n` + 
-	(highlighted ? `…**${highlighted}**…` : "_No preview available_");
-
-
-	return (
-		<Detail
-		navigationTitle={filename}
-		markdown={markdown} // intentionally blank
-		metadata={
-			<Detail.Metadata>
-			<Detail.Metadata.Label
-				title="Name"
-				text={filename}
-			/>
-			<Detail.Metadata.Label
-				title="Where"
-				text={selectedFile.path}
-			/>
-			<Detail.Metadata.Label
-				title="Type"
-				text="PDF document"
-			/>
-			<Detail.Metadata.Label
-				title="Last modified"
-				text={new Date(selectedFile.mtime).toLocaleString()}
-			/>
-			</Detail.Metadata>
-		}
-		actions={
-			<ActionPanel>
-			<Action.Open
-				title="Open PDF"
-				target={selectedFile.path}
-			/>
-			<Action.ShowInFinder
-				title="Open with File Manager"
-				path={selectedFile.path}
-			/>
-			<Action
-				title="Back to Results"
-				icon={Icon.ArrowLeft}
-				onAction={() => setSelectedFile(null)}
-			/>
-			</ActionPanel>
-		}
-		/>
-	);
-	}
-
-
-  /* ---------- List View ---------- */
+  /* ---------- UI ---------- */
 
   return (
     <List
+      isShowingDetail
       isLoading={loading}
       searchText={query}
       onSearchTextChange={setQuery}
@@ -209,16 +123,21 @@ export default function Scout(): JSX.Element {
     >
       <List.Section
         title={
-          results.length > 0
-            ? `Results (${results.length})`
-            : indexed
-            ? "No matches"
+          indexed
+            ? results.length
+              ? `Results (${results.length})`
+              : "No matches"
             : "Indexing…"
         }
       >
-        {results.map((file: IndexedFile) => {
-          const filename: string =
-            file.path.split("/").pop() ?? file.path;
+        {results.map((file) => {
+          const filename = file.path.split("/").pop() ?? file.path;
+          const cache = loadContentCache();
+          const text = cache[file.path]?.text ?? "";
+          const snippet = extractSnippet(text, query);
+          const preview = snippet
+            ? `…${highlight(snippet, query)}…`
+            : "_No preview available_";
 
           return (
             <List.Item
@@ -226,16 +145,28 @@ export default function Scout(): JSX.Element {
               title={filename}
               subtitle={file.path}
               icon={Icon.File}
+              detail={
+                <List.Item.Detail
+                  markdown={`# ${filename}`}
+                  metadata={
+                    <List.Item.Detail.Metadata>
+                      <List.Item.Detail.Metadata.Label title="Name" text={filename} />
+                      <List.Item.Detail.Metadata.Label title="Where" text={file.path} />
+                      <List.Item.Detail.Metadata.Label title="Type" text="PDF document" />
+                      <List.Item.Detail.Metadata.Label
+                        title="Last modified"
+                        text={new Date(file.mtime).toLocaleString()}
+                      />
+                    </List.Item.Detail.Metadata>
+                  }
+                />
+              }
               actions={
                 <ActionPanel>
-                  <Action
-                    title="Preview Content"
-                    icon={Icon.Eye}
-                    onAction={() => openPreview(file)}
-                  />
-                  <Action.Open
-                    title="Open PDF"
-                    target={file.path}
+                  <Action.Open title="Open PDF" target={file.path} />
+                  <Action.ShowInFinder
+                    title="Open with File Manager"
+                    path={file.path}
                   />
                   <Action.CopyToClipboard
                     title="Copy Path"
