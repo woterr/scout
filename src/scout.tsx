@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
   Action,
   ActionPanel,
@@ -7,44 +7,19 @@ import {
   showToast,
   Toast,
 } from "@vicinae/api";
+import { exec } from "child_process";
 
 import { buildFileIndex, loadFileIndex } from "./fileIndex";
 import { searchFiles } from "./search";
-import { loadContentCache } from "./contentCache";
 import type { IndexedFile } from "./crawler";
-
-/* ================= CONFIG ================= */
 
 const SEARCH_ROOTS: string[] = [
   "/home/user/Downloads",
-  "/mnt/shared/linux",
+  "/home/user/Pictures",
+  "/mnt/work",
 ];
 
-/* ================ HELPERS ================= */
-
-function extractSnippet(text: string, query: string, radius = 80): string {
-  const t = text.toLowerCase();
-  const q = query.toLowerCase();
-
-  const idx = t.indexOf(q);
-  if (idx === -1) return "";
-
-  const start = Math.max(0, idx - radius);
-  const end = Math.min(text.length, idx + q.length + radius);
-
-  return text.slice(start, end).replace(/\s+/g, " ").trim();
-}
-
-function highlight(snippet: string, query: string): string {
-  if (!snippet) return "";
-
-  const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const re = new RegExp(escaped, "gi");
-
-  return snippet.replace(re, (m) => `**${m}**`);
-}
-
-/* ================ COMPONENT ================= */
+let globalSearchId = 0;
 
 export default function Scout(): JSX.Element {
   const [query, setQuery] = useState("");
@@ -53,7 +28,7 @@ export default function Scout(): JSX.Element {
   const [indexed, setIndexed] = useState(false);
   const [loading, setLoading] = useState(false);
 
-  /* ---------- Indexing ---------- */
+  const debounceRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
     async function init() {
@@ -82,10 +57,12 @@ export default function Scout(): JSX.Element {
     init();
   }, []);
 
-  /* ---------- Search ---------- */
-
   useEffect(() => {
-    async function run() {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+
+    debounceRef.current = setTimeout(async () => {
+      const id = ++globalSearchId;
+
       if (!indexed || query.trim().length < 2) {
         setResults([]);
         return;
@@ -95,23 +72,51 @@ export default function Scout(): JSX.Element {
 
       try {
         const matches = await searchFiles(indexedFiles, query);
+
+        if (id !== globalSearchId) return;
+
         setResults(matches);
       } catch (e) {
         console.error("[Scout]", e);
-        showToast({
-          style: Toast.Style.Failure,
-          title: "Scout",
-          message: "Search failed",
-        });
       } finally {
-        setLoading(false);
+        if (id === globalSearchId) setLoading(false);
       }
-    }
+    }, 150);
 
-    run();
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+    };
   }, [query, indexed, indexedFiles]);
 
-  /* ---------- UI ---------- */
+  async function handleReindex() {
+    setLoading(true);
+
+    await showToast({
+      style: Toast.Style.Animated,
+      title: "Scout",
+      message: "Reindexing folders…",
+    });
+
+    try {
+      const files = buildFileIndex(SEARCH_ROOTS);
+      setIndexedFiles(files);
+
+      await showToast({
+        style: Toast.Style.Success,
+        title: "Scout",
+        message: `Reindexed ${files.length} PDFs`,
+      });
+    } catch (e) {
+      console.error(e);
+      await showToast({
+        style: Toast.Style.Failure,
+        title: "Scout",
+        message: "Reindex failed",
+      });
+    } finally {
+      setLoading(false);
+    }
+  }
 
   return (
     <List
@@ -119,7 +124,7 @@ export default function Scout(): JSX.Element {
       isLoading={loading}
       searchText={query}
       onSearchTextChange={setQuery}
-      searchBarPlaceholder="Search inside PDFs (content-based)…"
+      searchBarPlaceholder="Search inside PDFs…"
     >
       <List.Section
         title={
@@ -130,14 +135,8 @@ export default function Scout(): JSX.Element {
             : "Indexing…"
         }
       >
-        {results.map((file) => {
+        {results.map((file: any) => {
           const filename = file.path.split("/").pop() ?? file.path;
-          const cache = loadContentCache();
-          const text = cache[file.path]?.text ?? "";
-          const snippet = extractSnippet(text, query);
-          const preview = snippet
-            ? `…${highlight(snippet, query)}…`
-            : "_No preview available_";
 
           return (
             <List.Item
@@ -147,15 +146,35 @@ export default function Scout(): JSX.Element {
               icon={Icon.File}
               detail={
                 <List.Item.Detail
-                  markdown={`# ${filename}`}
+                  markdown={`# ${filename}
+                    ${file.snippet ? `\n${file.snippet}\n` : "\n_No preview available_\n"}`}
                   metadata={
                     <List.Item.Detail.Metadata>
-                      <List.Item.Detail.Metadata.Label title="Name" text={filename} />
-                      <List.Item.Detail.Metadata.Label title="Where" text={file.path} />
-                      <List.Item.Detail.Metadata.Label title="Type" text="PDF document" />
                       <List.Item.Detail.Metadata.Label
-                        title="Last modified"
+                        title="Path"
+                        text={file.path}
+                      />
+                      <List.Item.Detail.Metadata.Label
+                        title="Modified"
                         text={new Date(file.mtime).toLocaleString()}
+                      />
+                      <List.Item.Detail.Metadata.Label
+                        title="Directory"
+                        text={file.path.substring(
+                          0,
+                          file.path.lastIndexOf("/"),
+                        )}
+                      />
+                      <List.Item.Detail.Metadata.Label
+                        title="Size"
+                        text={(() => {
+                          try {
+                            const stats = require("fs").statSync(file.path);
+                            return `${(stats.size / 1024).toFixed(1)} KB`;
+                          } catch {
+                            return "Unknown";
+                          }
+                        })()}
                       />
                     </List.Item.Detail.Metadata>
                   }
@@ -164,13 +183,21 @@ export default function Scout(): JSX.Element {
               actions={
                 <ActionPanel>
                   <Action.Open title="Open PDF" target={file.path} />
-                  <Action.ShowInFinder
-                    title="Open with File Manager"
-                    path={file.path}
+                  <Action
+                    title="Show in File Manager"
+                    icon={Icon.Folder}
+                    onAction={() =>
+                      exec(`thunar "${file.path.replace(/"/g, '\\"')}"`)
+                    }
                   />
                   <Action.CopyToClipboard
                     title="Copy Path"
                     content={file.path}
+                  />
+                  <Action
+                    title="Reindex folders"
+                    icon={Icon.Repeat}
+                    onAction={handleReindex}
                   />
                 </ActionPanel>
               }
@@ -185,25 +212,7 @@ export default function Scout(): JSX.Element {
           icon={Icon.Repeat}
           actions={
             <ActionPanel>
-              <Action
-                title="Rebuild index"
-                onAction={async () => {
-                  await showToast({
-                    style: Toast.Style.Animated,
-                    title: "Scout",
-                    message: "Reindexing folders…",
-                  });
-
-                  const files = buildFileIndex(SEARCH_ROOTS);
-                  setIndexedFiles(files);
-
-                  await showToast({
-                    style: Toast.Style.Success,
-                    title: "Scout",
-                    message: `Reindexed ${files.length} PDFs`,
-                  });
-                }}
-              />
+              <Action title="Rebuild index" onAction={handleReindex} />
             </ActionPanel>
           }
         />

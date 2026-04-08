@@ -15,8 +15,11 @@ export function buildFileIndex(roots: string[]): IndexedFile[] {
   ensureCacheDir();
 
   let files: IndexedFile[] = [];
+
   for (const root of roots) {
-    files = files.concat(crawl(root));
+    try {
+      files = files.concat(crawl(root));
+    } catch {}
   }
 
   fs.writeFileSync(FILES_PATH, JSON.stringify(files, null, 2));
@@ -25,5 +28,10 @@ export function buildFileIndex(roots: string[]): IndexedFile[] {
 
 export function loadFileIndex(): IndexedFile[] | null {
   if (!fs.existsSync(FILES_PATH)) return null;
-  return JSON.parse(fs.readFileSync(FILES_PATH, "utf-8"));
+
+  try {
+    return JSON.parse(fs.readFileSync(FILES_PATH, "utf-8"));
+  } catch {
+    return null;
+  }
 }
